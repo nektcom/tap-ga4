@@ -2,11 +2,16 @@
 
 from __future__ import annotations
 
+import custom_logger
+
+_ = custom_logger
+
 import json
 import logging
 import sys
 from pathlib import Path
 
+from custom_logger import internal_logger, user_logger
 from google.analytics.data_v1beta import BetaAnalyticsDataClient
 from google.analytics.data_v1beta.types import GetMetadataRequest
 
@@ -128,9 +133,7 @@ class TapGoogleAnalytics(Tap):
                 return service_account.Credentials.from_service_account_info(json.load(f))
 
         if self.config.get("client_secrets"):
-            return service_account.Credentials.from_service_account_info(
-                self.config["client_secrets"]
-            )
+            return service_account.Credentials.from_service_account_info(self.config["client_secrets"])
 
         raise RuntimeError("No valid credentials provided.")  # noqa: TRY003
 
@@ -147,9 +150,7 @@ class TapGoogleAnalytics(Tap):
         if self.config.get("reports_list"):
             return self.config["reports_list"]
 
-        default_reports = Path(__file__).parent.joinpath(
-            "defaults", "default_report_definition.json"
-        )
+        default_reports = Path(__file__).parent.joinpath("defaults", "default_report_definition.json")
 
         report_def_file = self.config.get("reports", default_reports)
         if Path(report_def_file).is_file():
@@ -179,14 +180,7 @@ class TapGoogleAnalytics(Tap):
         request = GetMetadataRequest(name=f"properties/{self.config['property_id']}/metadata")
         results = self.analytics.get_metadata(request)
 
-        prop_id = self.config["property_id"]
-        LOGGER.debug("**** metadata for %s", prop_id)
-        LOGGER.debug(results)
-
-        metrics = {
-            metric.api_name: metric.type_.name.replace("TYPE_", "").lower()
-            for metric in results.metrics
-        }
+        metrics = {metric.api_name: metric.type_.name.replace("TYPE_", "").lower() for metric in results.metrics}
         dimensions = {dimension.api_name: "string" for dimension in results.dimensions}
         return dimensions, metrics
 
@@ -197,7 +191,7 @@ class TapGoogleAnalytics(Tap):
                 dimensions = report["dimensions"]
                 metrics = report["metrics"]
             except KeyError:
-                self.logger.critical(
+                user_logger.error(
                     "Report definition is missing one of the required properties \
                     (name, dimensions, metrics)"
                 )
@@ -205,22 +199,21 @@ class TapGoogleAnalytics(Tap):
 
             # Check that not too many metrics && dimensions have been requested
             if len(metrics) == 0:
-                self.logger.critical(
+                user_logger.error(
                     "'%s' has no metrics defined. GA reports must specify at least one metric.",
                     name,
                 )
                 sys.exit(1)
             elif len(metrics) > 10:  # noqa: PLR2004
-                self.logger.critical(
+                user_logger.error(
                     "'%s' has too many metrics defined. GA reports can have maximum 10 metrics.",
                     name,
                 )
                 sys.exit(1)
 
             if len(dimensions) > 9:  # noqa: PLR2004
-                self.logger.critical(
-                    "'%s' has too many dimensions defined. GA reports can have maximum 9 "
-                    "dimensions.",
+                user_logger.error(
+                    "'%s' has too many dimensions defined. GA reports can have maximum 9 " "dimensions.",
                     name,
                 )
                 sys.exit(1)
@@ -237,8 +230,8 @@ class TapGoogleAnalytics(Tap):
         # check that all the dimensions are proper Google Analytics Dimensions
         for dimension in dimensions:
             if dimension not in self.dimensions_ref:
-                self.logger.critical("'%s' is not a valid Google Analytics dimension", dimension)
-                self.logger.info(
+                user_logger.error("'%s' is not a valid Google Analytics dimension", dimension)
+                user_logger.info(
                     "For details see https://developers.google.com/analytics/devguides/reporting/data/v1/api-schema"
                 )
                 sys.exit(1)
@@ -264,8 +257,8 @@ class TapGoogleAnalytics(Tap):
                 continue
 
             if not metric.startswith(("metric", "calcMetric")) and metric not in self.metrics_ref:
-                self.logger.critical("'%s' is not a valid Google Analytics metric", metric)
-                self.logger.info(
+                user_logger.error("'%s' is not a valid Google Analytics metric", metric)
+                user_logger.info(
                     "For details see https://ga-dev-tools.google/ga4/\
                         dimensions-metrics-explorer/"
                 )
