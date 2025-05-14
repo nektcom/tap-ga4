@@ -16,6 +16,9 @@ keywords = [
   "GoogleAnalytics",
 ]
 license = "Apache-2.0"
+packages = [
+    { include = "tap_google_analytics" },
+]
 
 [tool.poetry.dependencies]
 python = ">=3.9"

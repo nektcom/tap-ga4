@@ -7,6 +7,8 @@ import json
 import logging
 import socket
 
+from custom_logger import user_logger
+
 
 class TapGaApiError(Exception):
     """Base exception for API errors."""
@@ -75,7 +77,13 @@ def is_fatal_error(error):
     if isinstance(error, socket.timeout):
         return False
 
-    status = error.code if error.message is not None else None
+    user_logger.error("Error: %s", error)
+
+    try:
+        status = error.code if error.message is not None else None
+    except:
+        status = None
+
     if status in [500, 503]:
         return False
 
@@ -85,5 +93,5 @@ def is_fatal_error(error):
     if reason in NON_FATAL_ERRORS:
         return False
 
-    LOGGER.critical("Received fatal error %s, reason=%s, status=%s", error, reason, status)
+    user_logger.error("Received fatal error %s, reason=%s, status=%s", error, reason, status)
     return True
