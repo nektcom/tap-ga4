@@ -177,8 +177,12 @@ class TapGoogleAnalytics(Tap):
             as the value. e.g. metrics['sessions'] == INTEGER
 
         """
-        request = GetMetadataRequest(name=f"properties/{self.config['property_id']}/metadata")
-        results = self.analytics.get_metadata(request)
+        try:
+            request = GetMetadataRequest(name=f"properties/{self.config['property_id']}/metadata")
+            results = self.analytics.get_metadata(request)
+        except Exception as e:
+            user_logger.error(f"An error occurred: {e}")
+            sys.exit(1)
 
         metrics = {metric.api_name: metric.type_.name.replace("TYPE_", "").lower() for metric in results.metrics}
         dimensions = {dimension.api_name: "string" for dimension in results.dimensions}
