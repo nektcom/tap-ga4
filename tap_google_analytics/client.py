@@ -9,15 +9,15 @@ import typing as t
 from datetime import date, datetime, timedelta, timezone
 
 import backoff
-from custom_logger import internal_logger, user_logger
 from google.analytics.data_v1beta.types import (
     DateRange,
     Metric,
     RunReportRequest,
     RunReportResponse,
 )
-from singer_sdk import typing as th
-from singer_sdk.streams import Stream
+from nekt_singer_sdk import typing as th
+from nekt_singer_sdk.custom_logger import internal_logger, user_logger
+from nekt_singer_sdk.streams import Stream
 
 from tap_google_analytics.error import is_fatal_error
 
@@ -201,6 +201,9 @@ class GoogleAnalyticsStream(Stream):
         total_rows = response.row_count
         return next_token if total_rows >= next_token * self.page_size else None
 
+    def _sanitize_custom_dimension(self, dimension: str) -> str:
+        return dimension.replace("customEvent:", "custom_")
+
     def _parse_response(self, response):
         if not response:
             return
@@ -222,7 +225,7 @@ class GoogleAnalyticsStream(Stream):
                 else:
                     value = dimension
 
-                record[header] = value
+                record[self._sanitize_custom_dimension(header)] = value
 
             for metric_name, value in zip(metricHeaders, dateRangeValues):
                 metric_type = self._lookup_data_type("metric", metric_name, self.dimensions_ref, self.metrics_ref)
@@ -306,8 +309,9 @@ class GoogleAnalyticsStream(Stream):
                 date_dimension_included = True
                 self.replication_key = "date"
             data_type = self._lookup_data_type("dimension", dimension, self.dimensions_ref, self.metrics_ref)
-            properties.append(th.Property(dimension, self._get_datatype(data_type), required=True))
-            primary_keys.append(dimension)
+            dimension_sanitized = self._sanitize_custom_dimension(dimension)
+            properties.append(th.Property(dimension_sanitized, self._get_datatype(data_type), required=True))
+            primary_keys.append(dimension_sanitized)
 
         # Add the metrics to the schema
         for metric in self.report["metrics"]:

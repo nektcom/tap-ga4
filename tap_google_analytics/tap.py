@@ -2,16 +2,11 @@
 
 from __future__ import annotations
 
-import custom_logger
-
-_ = custom_logger
-
 import json
 import logging
 import sys
 from pathlib import Path
 
-from custom_logger import internal_logger, user_logger
 from google.analytics.data_v1beta import BetaAnalyticsDataClient
 from google.analytics.data_v1beta.types import GetMetadataRequest
 
@@ -21,14 +16,11 @@ from google.oauth2 import service_account
 
 # Service Account - Google Analytics Authorization
 from google.oauth2.credentials import Credentials as OAuthCredentials
+from nekt_singer_sdk.custom_logger import internal_logger, user_logger
 from singer_sdk import Stream, Tap
 from singer_sdk import typing as th  # JSON schema typing helpers
 
 from tap_google_analytics.client import GoogleAnalyticsStream
-
-SCOPES = ["https://www.googleapis.com/auth/analytics.readonly"]
-
-LOGGER = logging.getLogger(__name__)
 
 
 class TapGoogleAnalytics(Tap):

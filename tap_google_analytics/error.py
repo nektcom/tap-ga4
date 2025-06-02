@@ -7,7 +7,7 @@ import json
 import logging
 import socket
 
-from custom_logger import user_logger
+from nekt_singer_sdk.custom_logger import user_logger
 
 
 class TapGaApiError(Exception):
