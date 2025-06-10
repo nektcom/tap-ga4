@@ -104,6 +104,12 @@ class TapGoogleAnalytics(Tap):
             description="List of Google Analytics Reports Definitions",
         ),
         th.Property(
+            "remove_default_reports",
+            th.BooleanType,
+            description="Whether to remove the default reports even though advanced reports are defined.",
+            default=False,
+        ),
+        th.Property(
             "end_date",
             th.StringType,
             description="The last record date to sync",
@@ -139,22 +145,18 @@ class TapGoogleAnalytics(Tap):
         return BetaAnalyticsDataClient(credentials=self.credentials)
 
     def _get_reports_config(self):
+        default_reports = []
+        with open("tap_google_analytics/defaults/default_report_definition.json") as f:  # noqa: PTH123
+            default_reports = json.load(f)
+
         if self.config.get("reports_list"):
-            return self.config["reports_list"]
+            advanced_reports = self.config.get("reports_list")
+            if self.config.get("remove_default_reports"):
+                return advanced_reports
+            else:
+                return default_reports + advanced_reports
 
-        default_reports = Path(__file__).parent.joinpath("defaults", "default_report_definition.json")
-
-        report_def_file = self.config.get("reports", default_reports)
-        if Path(report_def_file).is_file():
-            try:
-                with open(report_def_file) as f:  # noqa: PTH123
-                    return json.load(f)
-            except ValueError:
-                self.logger.critical("The JSON definition in '%s' has errors", report_def_file)
-                sys.exit(1)
-        else:
-            self.logger.critical("'%s' file not found", report_def_file)
-            sys.exit(1)
+        return default_reports
 
     def _fetch_valid_api_metadata(self) -> tuple[dict, dict]:
         """Fetch the valid (dimensions, metrics) for the Analytics Reporting API.
