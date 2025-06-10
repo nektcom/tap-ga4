@@ -16,7 +16,7 @@ from google.oauth2 import service_account
 
 # Service Account - Google Analytics Authorization
 from google.oauth2.credentials import Credentials as OAuthCredentials
-from nekt_singer_sdk.custom_logger import internal_logger, user_logger
+from nekt_singer_sdk.custom_logger import user_logger
 from singer_sdk import Stream, Tap
 from singer_sdk import typing as th  # JSON schema typing helpers
 
@@ -146,7 +146,8 @@ class TapGoogleAnalytics(Tap):
 
     def _get_reports_config(self):
         default_reports = []
-        with open("tap_google_analytics/defaults/default_report_definition.json") as f:  # noqa: PTH123
+        default_reports_path = Path(__file__).parent.joinpath("defaults", "default_report_definition.json")
+        with open(default_reports_path) as f:  # noqa: PTH123
             default_reports = json.load(f)
 
         if self.config.get("reports_list"):
