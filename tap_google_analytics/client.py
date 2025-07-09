@@ -202,7 +202,7 @@ class GoogleAnalyticsStream(Stream):
         return next_token if total_rows >= next_token * self.page_size else None
 
     def _sanitize_custom_dimension(self, dimension: str) -> str:
-        return dimension.replace("customEvent:", "custom_")
+        return dimension.replace("customEvent:", "custom_event_").replace("customUser:", "custom_user_")
 
     def _parse_response(self, response):
         if not response:
