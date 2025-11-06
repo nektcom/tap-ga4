@@ -143,7 +143,9 @@ class GoogleAnalyticsStream(Stream):
         if self.replication_method == REPLICATION_FULL_TABLE:
             start_date = pendulum.parse(self.config["start_date"]).date()
         else:
-            start_date = pendulum.parse(self.get_context_state(context)["replication_key_value"]).date()
+            start_date = pendulum.parse(
+                self.get_context_state(context).get("replication_key_value", self.config["start_date"])
+            ).date()
         parsed = max(start_date, date(2019, 1, 1))
         # state bookmarks need to be reformatted for API requests
         user_logger.info(f"[{self.name}] Starting sync from {parsed}.")
