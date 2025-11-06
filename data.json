@@ -1,8 +1,0 @@
-{
-  "name": "tap-ga4",
-  "namespace": "tap_ga4",
-  "pip_url": "-e ./extract/tap-ga4",
-  "executable": "tap-google-analytics",
-  "variant": "meltanolabs",
-  "capabilities": ["state", "catalog", "discover"]
-}

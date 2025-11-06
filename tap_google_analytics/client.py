@@ -9,6 +9,7 @@ import typing as t
 from datetime import date, datetime, timedelta, timezone
 
 import backoff
+import pendulum
 from google.analytics.data_v1beta.types import (
     DateRange,
     Metric,
@@ -17,7 +18,7 @@ from google.analytics.data_v1beta.types import (
 )
 from nekt_singer_sdk import typing as th
 from nekt_singer_sdk.custom_logger import internal_logger, user_logger
-from nekt_singer_sdk.streams import Stream
+from nekt_singer_sdk.streams import REPLICATION_FULL_TABLE, Stream
 
 from tap_google_analytics.error import is_fatal_error
 
@@ -139,12 +140,13 @@ class GoogleAnalyticsStream(Stream):
         return self._query_api(api_report_def, state_filter, next_page_token)
 
     def _get_state_filter(self, context: Context | None) -> str:
-        state = self.get_context_state(context)
-        state_bookmark = state.get("replication_key_value") or self.config["start_date"]
-        parsed = date.fromisoformat(state_bookmark)
-        parsed = max(parsed, date(2019, 1, 1))
-
+        if self.replication_method == REPLICATION_FULL_TABLE:
+            start_date = pendulum.parse(self.config["start_date"]).date()
+        else:
+            start_date = pendulum.parse(self.get_context_state(context)["replication_key_value"]).date()
+        parsed = max(start_date, date(2019, 1, 1))
         # state bookmarks need to be reformatted for API requests
+        user_logger.info(f"[{self.name}] Starting sync from {parsed}.")
         return date.strftime(parsed, "%Y-%m-%d")
 
     def _request_records(self, context: Context | None) -> t.Iterable[dict]:

@@ -1,0 +1,108 @@
+{
+  "meltano": {
+    "name": "tap-ga4",
+    "namespace": "tap_ga4",
+    "pip_url": "-e ./extract/tap-ga4",
+    "executable": "tap-google-analytics",
+    "variant": "meltanolabs",
+    "capabilities": ["state", "catalog", "discover"]
+  },
+  "connectors": [
+    {
+      "connector_slug": "google-analytics-ga4",
+      "config_template": {
+        "type": "object",
+        "required": ["start_date", "property_id", "oauth_credentials"],
+        "properties": {
+          "start_date": {
+            "type": "string",
+            "order": 3,
+            "title": "Start Date",
+            "format": "date",
+            "el_type": "extractor",
+            "description": "Records created or updated after the start date will be extracted from the source."
+          },
+          "property_id": {
+            "type": "string",
+            "order": 2,
+            "title": "Property ID",
+            "el_type": "extractor",
+            "docs_url": "https://developers.google.com/analytics/devguides/reporting/data/v1/property-id#what_is_my_property_id",
+            "description": "Your Google Analytics Property ID.",
+            "placeholder": "123456789"
+          },
+          "reports_list": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "required": ["name", "metrics", "dimensions"],
+              "properties": {
+                "name": {
+                  "type": "string",
+                  "title": "Report name",
+                  "description": "Google Analytics Report name"
+                },
+                "metrics": {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  },
+                  "title": "Metrics",
+                  "description": "Google Analytics Metrics"
+                },
+                "dimensions": {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  },
+                  "title": "Dimensions",
+                  "description": "Google Analytics Dimensions"
+                }
+              }
+            },
+            "title": "Reports List",
+            "format": "array-form",
+            "el_type": "extractor",
+            "item_label": "Report",
+            "description": "List of Google Analytics custom reports.",
+            "advanced_settings": true
+          },
+          "oauth_credentials": {
+            "type": "object",
+            "order": 1,
+            "title": "Refresh Token",
+            "format": "google-oauth",
+            "el_type": "extractor",
+            "required": ["refresh_token"],
+            "properties": {
+              "client_id": {
+                "type": "string",
+                "description": "OAuth Client ID"
+              },
+              "client_secret": {
+                "type": "string",
+                "secret": true,
+                "description": "OAuth Client Secret"
+              },
+              "refresh_token": {
+                "type": "string",
+                "secret": true,
+                "description": "OAuth Refresh Token"
+              }
+            }
+          },
+          "remove_default_reports": {
+            "type": "boolean",
+            "order": 4,
+            "title": "Remove default reports",
+            "default": false,
+            "el_type": "extractor",
+            "docs_url": "https://docs.nekt.com/sources/google-analytics-ga4#1-add-your-google-analytics-ga4-access",
+            "description": "In case you're using advanced reports, you can decide whether you want to keep or remove the default reports.",
+            "advanced_settings": true
+          }
+        }
+      }
+    }
+  ]
+}
