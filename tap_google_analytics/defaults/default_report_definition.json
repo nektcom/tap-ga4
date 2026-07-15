@@ -20,9 +20,9 @@
     "name": "traffic_sources",
     "dimensions": [
       "date",
-      "source",
-      "medium",
-      "sourcePlatform"
+      "sessionSource",
+      "sessionMedium",
+      "sessionSourcePlatform"
     ],
     "metrics": [
       "activeUsers",
