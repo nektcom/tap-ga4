@@ -1,41 +1,40 @@
-[build-system]
-build-backend = "poetry.core.masonry.api"
-requires = [
-  "poetry-core>=1.9,<2",
-]
-
-[tool.poetry]
-name = "tap-google-analytics"
+[project]
+name = "nekt-tap-google-analytics"
 version = "0.0.6"
 description = "`tap-google-analytics` is a Singer tap for GoogleAnalytics, built with the Meltano SDK for Singer Taps."
-authors = [
-  "Pat Nadolny",
-]
-keywords = [
-  "ELT",
-  "GoogleAnalytics",
-]
+readme = "README.md"
+authors = [{ name = "Pat Nadolny" }]
 license = "Apache-2.0"
-packages = [
-    { include = "tap_google_analytics" },
+keywords = [
+    "ELT",
+    "GoogleAnalytics",
+]
+requires-python = ">=3.11"
+dependencies = [
+    "backports-datetime-fromisoformat~=2.0.1; python_version < '3.11'",
+    "google-analytics-data~=0.18.8",
+    "nekt-singer-sdk @ git+https://github.com/nektcom/singer-sdk.git@v0.23.0",
+    "pendulum>=3.1.0",
 ]
 
-[tool.poetry.dependencies]
-python = ">=3.11"
-backports-datetime-fromisoformat = { version = "~=2.0.1", python = "<3.11" }
-google-analytics-data = "~=0.18.8"
-nekt-singer-sdk = {git = "https://github.com/nektcom/singer-sdk.git", rev = "v0.3.4"}
-pendulum = "^3.1.0"
-
-[tool.poetry.group.dev.dependencies]
-pytest = ">=7.2.1"
-coverage = ">=7.1"
-mypy = ">=1.8"
-ruff = ">=0.2.1"
-
-[tool.poetry.scripts]
-# CLI declaration
+[project.scripts]
 tap-google-analytics = 'tap_google_analytics.tap:TapGoogleAnalytics.cli'
+
+[dependency-groups]
+dev = [
+    "coverage>=7.1",
+    "mypy>=1.8",
+    "pytest>=7.2.1",
+    "ruff>=0.2.1",
+]
+
+[tool.hatch.build.targets.wheel]
+packages = [
+    "tap_google_analytics",
+]
+
+[tool.hatch.metadata]
+allow-direct-references = true
 
 [tool.ruff]
 target-version = "py39"
@@ -99,3 +98,8 @@ lint.isort.required-imports = [
   "from __future__ import annotations",
 ]
 lint.pydocstyle.convention = "google"
+
+
+[build-system]
+requires = ["hatchling>=1,<2"]
+build-backend = "hatchling.build"
