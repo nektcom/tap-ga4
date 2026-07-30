@@ -77,7 +77,7 @@ def is_fatal_error(error):
     if isinstance(error, socket.timeout):
         return False
 
-    user_logger.error("Error: %s", error)
+    user_logger.error(f"Error: {error}")
 
     try:
         status = error.code if error.message is not None else None
@@ -93,5 +93,5 @@ def is_fatal_error(error):
     if reason in NON_FATAL_ERRORS:
         return False
 
-    user_logger.error("Received fatal error %s, reason=%s, status=%s", error, reason, status)
+    user_logger.error(f"Received fatal error {error}, reason={reason}, status={status}")
     return True

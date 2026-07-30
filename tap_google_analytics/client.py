@@ -61,7 +61,7 @@ class GoogleAnalyticsStream(Stream):
     def _parse_dimension_type(self, attribute, dimensions_ref):
         if attribute in dimensions_ref:
             return self._parse_other_attrb_type(dimensions_ref[attribute])
-        internal_logger.error("Unsupported GA type: %s", type)
+        internal_logger.error(f"Unsupported GA type: {type}")
         sys.exit(1)
 
     def _parse_metric_type(self, attribute, metrics_ref):
@@ -86,7 +86,7 @@ class GoogleAnalyticsStream(Stream):
         if attribute in metrics_ref:
             return self._parse_other_attrb_type(metrics_ref[attribute])
 
-        internal_logger.error("Unsupported GA type: %s", type)
+        internal_logger.error(f"Unsupported GA type: {type}")
         sys.exit(1)
 
     def _parse_other_attrb_type(self, attr_type):
@@ -107,7 +107,7 @@ class GoogleAnalyticsStream(Stream):
         if field_type == "metric":
             return self._parse_metric_type(attribute, metrics_ref)
 
-        internal_logger.error("Unsupported GA type: %s", field_type)
+        internal_logger.error(f"Unsupported GA type: {field_type}")
         sys.exit(1)
 
     @staticmethod
@@ -133,10 +133,14 @@ class GoogleAnalyticsStream(Stream):
 
         # Add segmentIds to the request if the stream contains them
         if "segments" in report_def_raw:
-            report_definition["segments"] = [{"segmentId": segment_id} for segment_id in report_def_raw["segments"]]
+            report_definition["segments"] = [
+                {"segmentId": segment_id} for segment_id in report_def_raw["segments"]
+            ]
         return report_definition
 
-    def _request_data(self, api_report_def, state_filter: str, next_page_token: t.Any | None) -> RunReportResponse:
+    def _request_data(
+        self, api_report_def, state_filter: str, next_page_token: t.Any | None
+    ) -> RunReportResponse:
         return self._query_api(api_report_def, state_filter, next_page_token)
 
     def _get_state_filter(self, context: Context | None) -> str:
@@ -144,7 +148,9 @@ class GoogleAnalyticsStream(Stream):
             start_date = pendulum.parse(self.config["start_date"]).date()
         else:
             start_date = pendulum.parse(
-                self.get_context_state(context).get("replication_key_value", self.config["start_date"])
+                self.get_context_state(context).get(
+                    "replication_key_value", self.config["start_date"]
+                )
             ).date()
         parsed = max(start_date, date(2019, 1, 1))
         # state bookmarks need to be reformatted for API requests
@@ -181,10 +187,13 @@ class GoogleAnalyticsStream(Stream):
             yield from self._parse_response(resp)
 
             previous_token = copy.deepcopy(next_page_token)
-            next_page_token = self._get_next_page_token(response=resp, previous_token=previous_token)
+            next_page_token = self._get_next_page_token(
+                response=resp, previous_token=previous_token
+            )
             if next_page_token and next_page_token == previous_token:
                 msg = (
-                    f"Loop detected in pagination. " f"Pagination token {next_page_token} is identical to prior token."
+                    f"Loop detected in pagination. "
+                    f"Pagination token {next_page_token} is identical to prior token."
                 )
                 raise RuntimeError(msg)
             # Cycle until get_next_page_token() no longer returns a value
@@ -206,7 +215,9 @@ class GoogleAnalyticsStream(Stream):
         return next_token if total_rows >= next_token * self.page_size else None
 
     def _sanitize_custom_dimension(self, dimension: str) -> str:
-        return dimension.replace("customEvent:", "custom_event_").replace("customUser:", "custom_user_")
+        return dimension.replace("customEvent:", "custom_event_").replace(
+            "customUser:", "custom_user_"
+        )
 
     def _parse_response(self, response):
         if not response:
@@ -220,7 +231,9 @@ class GoogleAnalyticsStream(Stream):
             dateRangeValues = row.metric_values  # noqa: N806
 
             for header, dimension in zip(dimensionHeaders, dimensions):
-                data_type = self._lookup_data_type("dimension", header, self.dimensions_ref, self.metrics_ref)
+                data_type = self._lookup_data_type(
+                    "dimension", header, self.dimensions_ref, self.metrics_ref
+                )
 
                 if data_type == "integer":
                     value = int(dimension)
@@ -232,7 +245,9 @@ class GoogleAnalyticsStream(Stream):
                 record[self._sanitize_custom_dimension(header)] = value
 
             for metric_name, value in zip(metricHeaders, dateRangeValues):
-                metric_type = self._lookup_data_type("metric", metric_name, self.dimensions_ref, self.metrics_ref)
+                metric_type = self._lookup_data_type(
+                    "metric", metric_name, self.dimensions_ref, self.metrics_ref
+                )
 
                 if hasattr(value, "value"):
                     value = value.value  # noqa: PLW2901
@@ -312,14 +327,20 @@ class GoogleAnalyticsStream(Stream):
             if dimension == "date":
                 date_dimension_included = True
                 self.replication_key = "date"
-            data_type = self._lookup_data_type("dimension", dimension, self.dimensions_ref, self.metrics_ref)
+            data_type = self._lookup_data_type(
+                "dimension", dimension, self.dimensions_ref, self.metrics_ref
+            )
             dimension_sanitized = self._sanitize_custom_dimension(dimension)
-            properties.append(th.Property(dimension_sanitized, self._get_datatype(data_type), required=True))
+            properties.append(
+                th.Property(dimension_sanitized, self._get_datatype(data_type), required=True)
+            )
             primary_keys.append(dimension_sanitized)
 
         # Add the metrics to the schema
         for metric in self.report["metrics"]:
-            data_type = self._lookup_data_type("metric", metric, self.dimensions_ref, self.metrics_ref)
+            data_type = self._lookup_data_type(
+                "metric", metric, self.dimensions_ref, self.metrics_ref
+            )
             properties.append(th.Property(metric, self._get_datatype(data_type)))
 
         properties.extend(
