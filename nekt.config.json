@@ -7,6 +7,8 @@
     "variant": "meltanolabs",
     "capabilities": ["state", "catalog", "discover"]
   },
+  "base_image_type": "base",
+  "python": "3.11",
   "connectors": [
     {
       "connector_slug": "google-analytics-ga4",
