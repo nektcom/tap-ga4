@@ -7,7 +7,8 @@ import json
 import logging
 import socket
 
-from nekt_singer_sdk.custom_logger import user_logger
+from google.api_core import exceptions as google_exceptions
+from nekt_singer_sdk.custom_logger import internal_logger, user_logger
 
 
 class TapGaApiError(Exception):
@@ -72,12 +73,31 @@ LOGGER = logging.getLogger("googleapiclient.discovery_cache")
 LOGGER.setLevel(logging.ERROR)
 
 
+# Errors the GA4 Data API client (google.api_core) raises for conditions that clear up on their
+# own. They carry no `content`, so `error_reason` can never classify them.
+TRANSIENT_GOOGLE_ERRORS = (
+    google_exceptions.TooManyRequests,  # 429, includes ResourceExhausted (quota)
+    google_exceptions.InternalServerError,  # 500
+    google_exceptions.BadGateway,  # 502
+    google_exceptions.ServiceUnavailable,  # 503
+    google_exceptions.GatewayTimeout,  # 504, includes DeadlineExceeded
+)
+
+
+def is_quota_error(error) -> bool:
+    """Return True for a 429 (GA4 quota or rate limit)."""
+    return isinstance(error, google_exceptions.TooManyRequests)
+
+
+def is_timeout_error(error) -> bool:
+    """Return True when the request ran out of time (504 / DeadlineExceeded)."""
+    return isinstance(error, google_exceptions.GatewayTimeout)
+
+
 def is_fatal_error(error):
     """Return a boolean value depending on if its a fatal error or not."""
-    if isinstance(error, socket.timeout):
+    if isinstance(error, (socket.timeout, *TRANSIENT_GOOGLE_ERRORS)):
         return False
-
-    user_logger.error(f"Error: {error}")
 
     try:
         status = error.code if error.message is not None else None
@@ -93,5 +113,8 @@ def is_fatal_error(error):
     if reason in NON_FATAL_ERRORS:
         return False
 
-    user_logger.error(f"Received fatal error {error}, reason={reason}, status={status}")
+    user_logger.error(
+        f"Google Analytics rejected the request: {getattr(error, 'message', None) or error}"
+    )
+    internal_logger.error(f"Received fatal error {error!r}, reason={reason}, status={status}")
     return True

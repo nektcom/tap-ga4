@@ -5,10 +5,10 @@ from __future__ import annotations
 import copy
 import functools
 import sys
+import time
 import typing as t
 from datetime import date, datetime, timedelta, timezone
 
-import backoff
 import pendulum
 from google.analytics.data_v1beta.types import (
     DateRange,
@@ -20,7 +20,12 @@ from nekt_singer_sdk import typing as th
 from nekt_singer_sdk.custom_logger import internal_logger, user_logger
 from nekt_singer_sdk.streams import REPLICATION_FULL_TABLE, Stream
 
-from tap_google_analytics.error import is_fatal_error
+from tap_google_analytics.error import is_fatal_error, is_quota_error, is_timeout_error
+
+# Seconds to wait before each retry. Server errors and timeouts clear up in seconds (same
+# 5 attempts as the previous backoff); GA4 quota refills per hour, so 429s wait ~15 min in total.
+TRANSIENT_RETRY_WAITS = (5, 15, 45, 90)
+QUOTA_RETRY_WAITS = (60, 120, 240, 480)
 
 if t.TYPE_CHECKING:
     from singer_sdk.helpers.types import Context
@@ -46,6 +51,7 @@ class GoogleAnalyticsStream(Stream):
         self.end_date = self._get_end_date()
         self.property_id = self.config["property_id"]
         self.page_size = 100000
+        self._split_warned = False
 
     def _get_end_date(self):
         end_date_config = self.config.get("end_date")
@@ -139,9 +145,32 @@ class GoogleAnalyticsStream(Stream):
         return report_definition
 
     def _request_data(
-        self, api_report_def, state_filter: str, next_page_token: t.Any | None
+        self,
+        api_report_def,
+        state_filter: str,
+        next_page_token: t.Any | None,
+        *,
+        end_date: str | None = None,
+        retry_timeouts: bool = True,
     ) -> RunReportResponse:
-        return self._query_api(api_report_def, state_filter, next_page_token)
+        return self._query_api(
+            api_report_def,
+            state_filter,
+            next_page_token,
+            end_date=end_date,
+            retry_timeouts=retry_timeouts,
+        )
+
+    def _can_split_range(self, start_date: str, end_date: str) -> bool:
+        """Return True when a timed-out range may be fetched as two halves instead.
+
+        Only reports with the ``date`` dimension: each row is already one day, so two halves
+        return exactly the same rows. Without it GA4 aggregates over the whole range (active
+        users of two halves do not add up), and splitting would change the numbers.
+        """
+        if "date" not in self.report["dimensions"]:
+            return False
+        return date.fromisoformat(start_date) < date.fromisoformat(end_date)
 
     def _get_state_filter(self, context: Context | None) -> str:
         if self.replication_method == REPLICATION_FULL_TABLE:
@@ -172,17 +201,49 @@ class GoogleAnalyticsStream(Stream):
             RuntimeError: If a loop in pagination is detected. That is, when two
                 consecutive pagination tokens are identical.
         """
-        next_page_token: t.Any = None
-        finished = False
-
         state_filter = self._get_state_filter(context)
         api_report_def = self._generate_report_definition(self.report)
+        yield from self._request_range(api_report_def, state_filter, self.end_date)
+
+    def _request_range(self, api_report_def, start_date: str, end_date: str) -> t.Iterable[dict]:
+        """Page through one date range, halving it when Google times out on it.
+
+        A range that succeeds is fetched exactly as before (one report, offset pagination), so
+        the split only ever happens on the path that used to kill the run.
+        """
+        next_page_token: t.Any = None
+        finished = False
+        splittable = self._can_split_range(start_date, end_date)
+
         while not finished:
-            resp = self._request_data(
-                api_report_def,
-                state_filter=state_filter,
-                next_page_token=next_page_token,
-            )
+            try:
+                resp = self._request_data(
+                    api_report_def,
+                    state_filter=start_date,
+                    next_page_token=next_page_token,
+                    end_date=end_date,
+                    retry_timeouts=not splittable,
+                )
+            except Exception as error:
+                if not (splittable and is_timeout_error(error)):
+                    raise
+                first_end, second_start = self._split_range(start_date, end_date)
+                if not self._split_warned:
+                    self._split_warned = True
+                    user_logger.warning(
+                        f"[{self.name}] Google Analytics took too long to answer for the period "
+                        f"{start_date} to {end_date}. It is now being fetched in smaller parts; "
+                        "the run takes longer, but no data is skipped."
+                    )
+                internal_logger.warning(
+                    f"[{self.name}] timeout on {start_date}..{end_date} "
+                    f"page={next_page_token or 0} ({error!r}); splitting into "
+                    f"{start_date}..{first_end} and {second_start}..{end_date}. Rows of pages "
+                    "already emitted are re-emitted (same PK, deduplicated by the target)."
+                )
+                yield from self._request_range(api_report_def, start_date, first_end)
+                yield from self._request_range(api_report_def, second_start, end_date)
+                return
 
             yield from self._parse_response(resp)
 
@@ -265,25 +326,77 @@ class GoogleAnalyticsStream(Stream):
 
             yield record
 
-    @backoff.on_exception(backoff.expo, (Exception), max_tries=5, giveup=is_fatal_error)
-    def _query_api(self, report_definition, state_filter, pageToken=None) -> RunReportResponse:  # noqa: N803
-        """Query the Analytics Reporting API V4.
+    @staticmethod
+    def _split_range(start_date: str, end_date: str) -> tuple[str, str]:
+        """Return (end of the first half, start of the second half) of an inclusive range."""
+        start = date.fromisoformat(start_date)
+        days = (date.fromisoformat(end_date) - start).days + 1
+        first_end = start + timedelta(days=days // 2 - 1)
+        return first_end.isoformat(), (first_end + timedelta(days=1)).isoformat()
+
+    def _query_api(
+        self,
+        report_definition,
+        state_filter,
+        pageToken=None,  # noqa: N803
+        *,
+        end_date: str | None = None,
+        retry_timeouts: bool = True,
+    ) -> RunReportResponse:
+        """Run one GA4 report page, waiting out transient errors.
+
+        Quota errors (429) wait minutes, since GA4 refills its token buckets per hour; other
+        transient errors wait seconds. With ``retry_timeouts=False`` a timeout is raised at once
+        so the caller can split the date range instead of repeating a request that cannot fit.
 
         Returns:
-            The Analytics Reporting API V4 response.
+            The GA4 Data API response.
         """
+        end_date = end_date or self.end_date
         request = RunReportRequest(
             property=f"properties/{self.property_id}",
             dimensions=report_definition["dimensions"],
             metrics=report_definition["metrics"],
-            date_ranges=[DateRange(start_date=state_filter, end_date=self.end_date)],
+            date_ranges=[DateRange(start_date=state_filter, end_date=end_date)],
             limit=self.page_size,
             metric_filter=report_definition["metricFilter"],
             dimension_filter=report_definition["dimensionFilter"],
             offset=(pageToken or 0) * self.page_size,
         )
 
-        return self.analytics.run_report(request)
+        transient_waits = iter(TRANSIENT_RETRY_WAITS)
+        quota_waits = iter(QUOTA_RETRY_WAITS)
+        attempt = 0
+        while True:
+            attempt += 1
+            try:
+                return self.analytics.run_report(request)
+            except Exception as error:
+                if (not retry_timeouts and is_timeout_error(error)) or is_fatal_error(error):
+                    raise
+                quota = is_quota_error(error)
+                wait = next(quota_waits if quota else transient_waits, None)
+                where = f"{state_filter}..{end_date} page={pageToken or 0} attempt={attempt}"
+                if wait is None:
+                    if quota:
+                        user_logger.error(
+                            f"[{self.name}] The Google Analytics API quota for this property is "
+                            "exhausted and did not recover after waiting about 15 minutes. "
+                            "Try again later, or sync a shorter period (a more recent start date)."
+                        )
+                    internal_logger.error(
+                        f"[{self.name}] giving up on {where}: {error!r}", exc_info=True
+                    )
+                    raise
+                if quota:
+                    user_logger.warning(
+                        f"[{self.name}] Google Analytics quota reached; waiting {wait // 60} "
+                        "minute(s) before trying again."
+                    )
+                internal_logger.warning(
+                    f"[{self.name}] transient error on {where}: {error!r}; retrying in {wait}s"
+                )
+                time.sleep(wait)
 
     @staticmethod
     def _get_datatype(string_type):
