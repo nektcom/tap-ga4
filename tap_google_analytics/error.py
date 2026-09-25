@@ -89,6 +89,20 @@ def is_quota_error(error) -> bool:
     return isinstance(error, google_exceptions.TooManyRequests)
 
 
+def quota_window(error) -> str | None:
+    """Return "hour" or "day" when a 429 names which GA4 token bucket ran out, else None.
+
+    GA4 words it as e.g. "Exhausted property tokens for a project per hour. These quota tokens
+    will return in under an hour." Other 429s (concurrent requests) name no window.
+    """
+    message = str(getattr(error, "message", None) or error).lower()
+    if "per day" in message:
+        return "day"
+    if "per hour" in message:
+        return "hour"
+    return None
+
+
 def is_timeout_error(error) -> bool:
     """Return True when the request ran out of time (504 / DeadlineExceeded)."""
     return isinstance(error, google_exceptions.GatewayTimeout)

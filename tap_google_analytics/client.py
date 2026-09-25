@@ -20,12 +20,31 @@ from nekt_singer_sdk import typing as th
 from nekt_singer_sdk.custom_logger import internal_logger, user_logger
 from nekt_singer_sdk.streams import REPLICATION_FULL_TABLE, Stream
 
-from tap_google_analytics.error import is_fatal_error, is_quota_error, is_timeout_error
+from tap_google_analytics.error import (
+    is_fatal_error,
+    is_quota_error,
+    is_timeout_error,
+    quota_window,
+)
 
 # Seconds to wait before each retry. Server errors and timeouts clear up in seconds (same
-# 5 attempts as the previous backoff); GA4 quota refills per hour, so 429s wait ~15 min in total.
+# 5 attempts as the previous backoff). 429s that name no bucket (e.g. concurrent requests)
+# wait ~15 min in total.
 TRANSIENT_RETRY_WAITS = (5, 15, 45, 90)
 QUOTA_RETRY_WAITS = (60, 120, 240, 480)
+
+# An exhausted hourly token bucket "returns in under an hour": poll every 5 min for up to 65 min.
+HOURLY_QUOTA_POLL_SECONDS = 300
+HOURLY_QUOTA_MAX_WAIT_SECONDS = 65 * 60
+# Total time a run may spend waiting on quota, across all streams. The platform stops a run
+# after 5h45, so a backfill that needs more hours of quota than this fails instead of being killed.
+QUOTA_WAIT_BUDGET_SECONDS = 4 * 60 * 60
+_quota_wait = {"spent": 0}
+
+# Reports with the `date` dimension fetch longer ranges one calendar month at a time: with offset
+# pagination each 100k-row page re-runs the report over the whole range, which is what burns the
+# token budget on backfills. Incremental runs (1-2 days) stay a single request.
+WINDOW_THRESHOLD_DAYS = 31
 
 if t.TYPE_CHECKING:
     from singer_sdk.helpers.types import Context
@@ -203,7 +222,33 @@ class GoogleAnalyticsStream(Stream):
         """
         state_filter = self._get_state_filter(context)
         api_report_def = self._generate_report_definition(self.report)
-        yield from self._request_range(api_report_def, state_filter, self.end_date)
+        windows = self._sync_windows(state_filter, self.end_date)
+        if len(windows) > 1:
+            internal_logger.info(
+                f"[{self.name}] {state_filter}..{self.end_date} is fetched in {len(windows)} "
+                "monthly windows"
+            )
+        for start_date, end_date in windows:
+            yield from self._request_range(api_report_def, start_date, end_date)
+
+    def _sync_windows(self, start_date: str, end_date: str) -> list[tuple[str, str]]:
+        """Return the date ranges to request: calendar months for long ranges of date reports.
+
+        Each row of a report with the `date` dimension is one day, so the rows are the same
+        whether the range is requested at once or month by month. Other reports aggregate over
+        the range and are always requested whole.
+        """
+        start, end = date.fromisoformat(start_date), date.fromisoformat(end_date)
+        if "date" not in self.report["dimensions"] or (end - start).days < WINDOW_THRESHOLD_DAYS:
+            return [(start_date, end_date)]
+
+        windows = []
+        while start <= end:
+            next_month = (start.replace(day=1) + timedelta(days=32)).replace(day=1)
+            window_end = min(next_month - timedelta(days=1), end)
+            windows.append((start.isoformat(), window_end.isoformat()))
+            start = next_month
+        return windows
 
     def _request_range(self, api_report_def, start_date: str, end_date: str) -> t.Iterable[dict]:
         """Page through one date range, halving it when Google times out on it.
@@ -345,9 +390,11 @@ class GoogleAnalyticsStream(Stream):
     ) -> RunReportResponse:
         """Run one GA4 report page, waiting out transient errors.
 
-        Quota errors (429) wait minutes, since GA4 refills its token buckets per hour; other
-        transient errors wait seconds. With ``retry_timeouts=False`` a timeout is raised at once
-        so the caller can split the date range instead of repeating a request that cannot fit.
+        An exhausted hourly token bucket is polled until it refills (up to about an hour, within
+        the run's quota-wait budget); an exhausted daily bucket fails at once; other 429s wait
+        minutes and other transient errors wait seconds. With ``retry_timeouts=False`` a timeout
+        is raised at once so the caller can split the date range instead of repeating a request
+        that cannot fit.
 
         Returns:
             The GA4 Data API response.
@@ -362,21 +409,39 @@ class GoogleAnalyticsStream(Stream):
             metric_filter=report_definition["metricFilter"],
             dimension_filter=report_definition["dimensionFilter"],
             offset=(pageToken or 0) * self.page_size,
+            return_property_quota=True,
         )
 
         transient_waits = iter(TRANSIENT_RETRY_WAITS)
         quota_waits = iter(QUOTA_RETRY_WAITS)
+        hourly_waited = 0
         attempt = 0
         while True:
             attempt += 1
+            where = f"{state_filter}..{end_date} page={pageToken or 0} attempt={attempt}"
             try:
-                return self.analytics.run_report(request)
+                response = self.analytics.run_report(request)
             except Exception as error:
                 if (not retry_timeouts and is_timeout_error(error)) or is_fatal_error(error):
                     raise
                 quota = is_quota_error(error)
+                window = quota_window(error) if quota else None
+                if window == "day":
+                    user_logger.error(
+                        f"[{self.name}] The daily Google Analytics API quota for this property is "
+                        "exhausted. It refills at midnight Pacific Time; run the source again "
+                        "after that, or sync a shorter period (a more recent start date)."
+                    )
+                    internal_logger.error(f"[{self.name}] daily quota on {where}: {error!r}")
+                    raise
+                if window == "hour":
+                    wait = self._hourly_quota_wait(hourly_waited, where, error)
+                    if wait is None:
+                        raise
+                    hourly_waited += wait
+                    time.sleep(wait)
+                    continue
                 wait = next(quota_waits if quota else transient_waits, None)
-                where = f"{state_filter}..{end_date} page={pageToken or 0} attempt={attempt}"
                 if wait is None:
                     if quota:
                         user_logger.error(
@@ -397,6 +462,64 @@ class GoogleAnalyticsStream(Stream):
                     f"[{self.name}] transient error on {where}: {error!r}; retrying in {wait}s"
                 )
                 time.sleep(wait)
+                continue
+
+            self._log_property_quota(response, where)
+            return response
+
+    def _hourly_quota_wait(self, hourly_waited: int, where: str, error) -> int | None:
+        """Return the seconds to wait for an exhausted hourly token bucket, or None to give up.
+
+        Gives up once this request has waited about an hour (the bucket should have refilled)
+        or once the run has used its whole quota-wait budget.
+        """
+        budget_left = QUOTA_WAIT_BUDGET_SECONDS - _quota_wait["spent"]
+        if hourly_waited >= HOURLY_QUOTA_MAX_WAIT_SECONDS or budget_left <= 0:
+            user_logger.error(
+                f"[{self.name}] The hourly Google Analytics API quota for this property did not "
+                f"refill in time (this run waited {_quota_wait['spent'] // 60} minutes for quota "
+                "in total). Try again later, or sync a shorter period (a more recent start date)."
+            )
+            internal_logger.error(
+                f"[{self.name}] giving up on {where} after {hourly_waited}s on this request, "
+                f"{_quota_wait['spent']}s of quota waits in the run: {error!r}"
+            )
+            return None
+
+        wait = min(HOURLY_QUOTA_POLL_SECONDS, budget_left)
+        if hourly_waited == 0:
+            user_logger.warning(
+                f"[{self.name}] The hourly Google Analytics quota for this property is exhausted. "
+                "Waiting up to an hour for it to refill; the run takes longer, but no data is "
+                "skipped."
+            )
+        _quota_wait["spent"] += wait
+        internal_logger.warning(
+            f"[{self.name}] hourly quota on {where}: {error!r}; waited {hourly_waited}s on this "
+            f"request, {_quota_wait['spent']}s in the run; retrying in {wait}s"
+        )
+        return wait
+
+    def _log_property_quota(self, response, where: str) -> None:
+        """Log the tokens GA4 reports for this property, to measure what each request costs."""
+        quota = getattr(response, "property_quota", None)
+        if not quota:
+            return
+        buckets = (
+            "tokens_per_project_per_hour",
+            "tokens_per_hour",
+            "tokens_per_day",
+            "concurrent_requests",
+        )
+        usage = ", ".join(
+            f"{name}={getattr(quota, name).consumed}/{getattr(quota, name).remaining}"
+            for name in buckets
+            if getattr(quota, name, None)
+        )
+        internal_logger.info(
+            f"[{self.name}] {where} rows={getattr(response, 'row_count', '?')} "
+            f"quota consumed/remaining: {usage}"
+        )
 
     @staticmethod
     def _get_datatype(string_type):

@@ -71,7 +71,14 @@ def _stream(analytics, dimensions=("date",)):
 def no_sleep(monkeypatch):
     sleeps: list[int] = []
     monkeypatch.setattr(client_module.time, "sleep", sleeps.append)
+    monkeypatch.setitem(client_module._quota_wait, "spent", 0)
     return sleeps
+
+
+HOURLY = (
+    "Exhausted property tokens for a project per hour. These quota tokens will return in "
+    "under an hour."
+)
 
 
 def _records(stream):
@@ -140,7 +147,7 @@ def test_single_day_timeout_is_retried_then_raised(no_sleep):
 def test_quota_waits_minutes_then_recovers(no_sleep):
     def fail(_start, _end, call):
         return (
-            google_exceptions.ResourceExhausted("Exhausted property tokens per hour")
+            google_exceptions.ResourceExhausted("Exhausted concurrent requests quota.")
             if call < 3
             else None
         )
@@ -158,6 +165,86 @@ def test_quota_that_never_recovers_raises(no_sleep):
     with pytest.raises(google_exceptions.ResourceExhausted):
         _records(_stream(analytics))
     assert no_sleep == [60, 120, 240, 480]
+
+
+def test_hourly_quota_is_polled_until_it_refills(no_sleep):
+    def fail(_start, _end, call):
+        return google_exceptions.ResourceExhausted(HOURLY) if call <= 10 else None
+
+    analytics = FakeAnalytics(fail)
+    records = _records(_stream(analytics))
+
+    assert len(records) == 8
+    assert no_sleep == [300] * 10
+    assert client_module._quota_wait["spent"] == 3000
+
+
+def test_hourly_quota_gives_up_after_about_an_hour(no_sleep):
+    analytics = FakeAnalytics(lambda *_: google_exceptions.ResourceExhausted(HOURLY))
+
+    with pytest.raises(google_exceptions.ResourceExhausted):
+        _records(_stream(analytics))
+    assert no_sleep == [300] * 13
+
+
+def test_hourly_quota_respects_the_run_budget(no_sleep, monkeypatch):
+    monkeypatch.setitem(
+        client_module._quota_wait, "spent", client_module.QUOTA_WAIT_BUDGET_SECONDS - 400
+    )
+    analytics = FakeAnalytics(lambda *_: google_exceptions.ResourceExhausted(HOURLY))
+
+    with pytest.raises(google_exceptions.ResourceExhausted):
+        _records(_stream(analytics))
+    assert no_sleep == [300, 100]
+
+
+def test_daily_quota_fails_at_once(no_sleep):
+    analytics = FakeAnalytics(
+        lambda *_: google_exceptions.ResourceExhausted("Exhausted property tokens per day.")
+    )
+
+    with pytest.raises(google_exceptions.ResourceExhausted):
+        _records(_stream(analytics))
+    assert len(analytics.calls) == 1
+    assert no_sleep == []
+
+
+def test_long_date_ranges_are_fetched_month_by_month():
+    analytics = FakeAnalytics()
+    stream = _stream(analytics)
+    stream.end_date = "2024-03-10"
+    stream._get_state_filter = lambda _context: "2024-01-15"
+
+    records = list(stream._request_records(None))
+
+    assert analytics.calls == [
+        ("2024-01-15", "2024-01-31"),
+        ("2024-02-01", "2024-02-29"),
+        ("2024-03-01", "2024-03-10"),
+    ]
+    assert [r["date"] for r in records] == [
+        d.replace("-", "") for d in _days("2024-01-15", "2024-03-10")
+    ]
+
+
+def test_short_ranges_and_reports_without_date_stay_a_single_request():
+    analytics = FakeAnalytics()
+    stream = _stream(analytics)
+    assert stream._sync_windows("2024-01-01", "2024-01-31") == [("2024-01-01", "2024-01-31")]
+
+    stream = _stream(analytics, dimensions=("pagePath",))
+    assert stream._sync_windows("2024-01-01", "2024-12-31") == [("2024-01-01", "2024-12-31")]
+
+
+def test_requests_ask_for_the_property_quota():
+    analytics = FakeAnalytics()
+    requests = []
+    original = analytics.run_report
+    analytics.run_report = lambda request: requests.append(request) or original(request)
+
+    _records(_stream(analytics))
+
+    assert requests[0].return_property_quota is True
 
 
 def test_client_errors_stay_fatal(no_sleep):
